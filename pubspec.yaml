@@ -1,0 +1,53 @@
+name: memes
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.1
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.1
+  path: ^1.8.3
+  
+  get_it: ^7.6.7
+  flutter_bloc: ^8.1.4
+  equatable: ^2.0.5
+  
+  dartz: ^0.10.1
+  
+  # Network and connectivity
+  connectivity_plus: ^6.1.4
+  http: ^1.2.0
+  internet_connection_checker: ^3.0.1
+  
+  # Local storage
+  shared_preferences: ^2.2.2
+  bloc: ^8.1.4
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^5.0.0
+  mockito: ^5.4.4
+  build_runner: ^2.4.8
+  bloc_test: ^9.1.7
+  mocktail: ^1.0.4
+
+
+dependency_overrides:
+  http: ^1.2.0
+
+
+
+
+
+flutter:
+  uses-material-design: true
+
