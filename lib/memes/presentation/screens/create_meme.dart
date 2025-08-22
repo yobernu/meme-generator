@@ -1,10 +1,14 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:memes/memes/domain/entities/meme.dart';
+import 'package:memes/core/services/download_meme.dart' as download_service;
 
+// outline
 class CreateMemeScreen extends StatefulWidget {
   final Meme meme;
   const CreateMemeScreen({super.key, required this.meme});
@@ -18,6 +22,8 @@ class _CreateMemeScreenState extends State<CreateMemeScreen>
   final GlobalKey _captureKey = GlobalKey();
   late final TransformationController _transformer;
   bool _showGrid = false;
+  late final FocusNode _textFocus;
+  bool _panelCollapsed = false;
 
   // Caption model for the editor
   final List<_Caption> _captions = [];
@@ -31,6 +37,7 @@ class _CreateMemeScreenState extends State<CreateMemeScreen>
   void initState() {
     super.initState();
     _transformer = TransformationController();
+    _textFocus = FocusNode();
     final initialCount = widget.meme.captions.clamp(0, widget.meme.boxCount);
     for (int i = 0; i < initialCount; i++) {
       _captions.add(_Caption.initial(i));
@@ -43,6 +50,7 @@ class _CreateMemeScreenState extends State<CreateMemeScreen>
       c.controller.dispose();
     }
     _transformer.dispose();
+    _textFocus.dispose();
     super.dispose();
   }
 
@@ -53,6 +61,24 @@ class _CreateMemeScreenState extends State<CreateMemeScreen>
 
   void _select(int id) {
     setState(() => _selectedId = id);
+  }
+
+  void _focusCaption(int id) {
+    // Select the caption and focus the bottom TextField after the frame
+    if (_selectedId != id) {
+      setState(() => _selectedId = id);
+    }
+    // Ensure panel is expanded when editing
+    if (_panelCollapsed) {
+      setState(() => _panelCollapsed = false);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) FocusScope.of(context).requestFocus(_textFocus);
+    });
+  }
+
+  void _unfocus() {
+    FocusScope.of(context).unfocus();
   }
 
   void _addCaption() {
@@ -72,41 +98,121 @@ class _CreateMemeScreenState extends State<CreateMemeScreen>
 
   Future<void> _export() async {
     try {
-      RenderRepaintBoundary boundary =
-          _captureKey.currentContext!.findRenderObject()
-              as RenderRepaintBoundary;
-      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (!mounted) return;
-      final bytes = byteData!.buffer.asUint8List();
+      // Make sure the background image is decoded and ready
+      await precacheImage(NetworkImage(widget.meme.url), context);
+      // Ensure the latest frame (text edits, moves) is painted before capture
+      await WidgetsBinding.instance.endOfFrame;
+
+      final ctx = _captureKey.currentContext;
+      if (ctx == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Capture error: context unavailable')),
+        );
+        return;
+      }
+      final renderObj = ctx.findRenderObject();
+      if (renderObj is! RenderRepaintBoundary) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Capture error: not a repaint boundary'),
+          ),
+        );
+        return;
+      }
+
+      // Show loading dialog while saving
       showDialog(
         context: context,
-        builder: (context) => Dialog(
-          clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(_panelRadius),
-          ),
-          child: Stack(
-            children: [
-              Image.memory(bytes, fit: BoxFit.contain),
-              Positioned(
-                top: 12,
-                right: 12,
-                child: FilledButton.tonalIcon(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
-                  label: const Text('Close'),
-                ),
-              ),
-            ],
-          ),
-        ),
+        barrierDismissible: false,
+        builder: (context) => const Center(child: CircularProgressIndicator()),
       );
+
+      try {
+        // Capture the entire widget with captions as an image
+        final boundary = renderObj;
+        final deviceRatio = MediaQuery.of(context).devicePixelRatio;
+        final pixelRatio = deviceRatio.clamp(2.0, 3.0);
+        final ui.Image image = await boundary.toImage(pixelRatio: pixelRatio);
+        final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+
+        if (byteData == null) {
+          if (!mounted) return;
+          Navigator.of(context).pop(); // Close loading dialog
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to capture meme with captions'),
+            ),
+          );
+          return;
+        }
+
+        // Save the captured image with captions
+        final tempDir = await getTemporaryDirectory();
+        final filePath =
+            '${tempDir.path}/meme_with_captions_${DateTime.now().millisecondsSinceEpoch}.png';
+        final file = File(filePath);
+        await file.writeAsBytes(byteData.buffer.asUint8List());
+
+        // Save to gallery using download service with isLocalFile: true
+        final result = await download_service.downloadMeme(
+          filePath,
+          isLocalFile: true,
+          onProgress: (received, total) {
+            debugPrint(
+              'Saving progress: ${(received / total * 100).toStringAsFixed(0)}%',
+            );
+          },
+        );
+
+        // Clean up temp file
+        if (await file.exists()) {
+          await file.delete();
+        }
+
+        if (!mounted) return;
+        Navigator.of(context).pop(); // Close loading dialog
+
+        if (result.isSuccess) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Meme with captions saved successfully!'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to save meme: ${result.errorMessage}'),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      } catch (e) {
+        if (!mounted) return;
+        Navigator.of(context).pop(); // Close loading dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Failed to save meme: ${e.toString().split('\n').first}',
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Failed to save meme: ${e.toString().split('\n').first}',
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
     }
   }
 
@@ -215,33 +321,29 @@ class _CreateMemeScreenState extends State<CreateMemeScreen>
             child: Stack(
               fit: StackFit.expand,
               children: [
-                // Background image
-                Ink.image(
-                  image: NetworkImage(widget.meme.url),
-                  fit: BoxFit.cover,
-                ),
-                // Optional grid overlay
+                Image.network(widget.meme.url, fit: BoxFit.cover),
                 if (_showGrid) const _GridOverlay(),
+                ..._captions.map(
+                  (c) => _CaptionBox(
+                    caption: c,
+                    selected: c.id == _selectedId,
+                    onTap: () => _select(c.id),
+                    onDoubleTap: () => _focusCaption(c.id),
+                    scale: _transformer.value.getMaxScaleOnAxis(),
+                    onChanged: (updated) {
+                      setState(() {
+                        final idx = _captions.indexWhere(
+                          (e) => e.id == updated.id,
+                        );
+                        if (idx != -1) _captions[idx] = updated;
+                      });
+                    },
+                  ),
+                ),
               ],
             ),
           ),
 
-          // Draggable captions overlay
-          ..._captions.map(
-            (c) => _CaptionBox(
-              caption: c,
-              selected: c.id == _selectedId,
-              onTap: () => _select(c.id),
-              onChanged: (updated) {
-                setState(() {
-                  final idx = _captions.indexWhere((e) => e.id == updated.id);
-                  if (idx != -1) _captions[idx] = updated;
-                });
-              },
-            ),
-          ),
-
-          // Top-right export button inside canvas for convenience
           Positioned(
             right: 12,
             top: 12,
@@ -291,64 +393,108 @@ class _CreateMemeScreenState extends State<CreateMemeScreen>
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
       child: _Glass(
         radius: _panelRadius,
-        child: AnimatedSize(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.text_fields),
-                    const SizedBox(width: 8),
-                    Text(
-                      cap == null
-                          ? 'Select a caption to style'
-                          : 'Caption #${cap.id + 1}',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
+        child: GestureDetector(
+          onVerticalDragEnd: (details) {
+            final v = details.primaryVelocity ?? 0;
+            if (v > 200) {
+              // swipe down -> collapse
+              setState(() => _panelCollapsed = true);
+              _unfocus();
+            } else if (v < -200) {
+              // swipe up -> expand
+              setState(() => _panelCollapsed = false);
+            }
+          },
+          onVerticalDragUpdate: (details) {
+            // Optional: Add smooth dragging effect
+            if (details.primaryDelta != null) {
+              setState(() {
+                // You can add visual feedback during drag if needed
+              });
+            }
+          },
+
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOut,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.text_fields),
+                      const SizedBox(width: 8),
+                      Text(
+                        cap == null
+                            ? 'Select a caption to style'
+                            : 'Caption #${cap.id + 1}',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const Spacer(),
+                      // Collapse/expand handle ('-')
+                      IconButton(
+                        tooltip: _panelCollapsed ? 'Expand' : 'Collapse',
+                        onPressed: () => setState(() {
+                          _panelCollapsed = !_panelCollapsed;
+                          if (_panelCollapsed) _unfocus();
+                        }),
+                        icon: Icon(
+                          _panelCollapsed
+                              ? Icons.keyboard_arrow_up
+                              : Icons.horizontal_rule,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Export PNG',
+                        onPressed: _export,
+                        icon: const Icon(Icons.download_rounded),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (!_panelCollapsed && cap != null && cap.id != -1) ...[
+                    TextField(
+                      controller: cap.controller,
+                      focusNode: _textFocus,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => _unfocus(),
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        hintText: 'Type your caption…',
+                        prefixIcon: Icon(Icons.edit_outlined),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                    const Spacer(),
-                    IconButton(
-                      tooltip: 'Export PNG',
-                      onPressed: _export,
-                      icon: const Icon(Icons.download_rounded),
+                    const SizedBox(height: 12),
+                    _StyleControls(
+                      caption: cap,
+                      onChanged: (updated) {
+                        setState(() {
+                          final idx = _captions.indexWhere(
+                            (e) => e.id == updated.id,
+                          );
+                          if (idx != -1) _captions[idx] = updated;
+                        });
+                      },
                     ),
+                  ] else ...[
+                    const SizedBox(height: 4),
+                    if (_panelCollapsed)
+                      const Text(
+                        'Collapsed. Swipe up or tap the up arrow to edit.',
+                        textAlign: TextAlign.center,
+                      )
+                    else
+                      const Text(
+                        'Tip: Tap on a caption to select it. Use the + button to add more.',
+                        textAlign: TextAlign.center,
+                      ),
+                    const SizedBox(height: 4),
                   ],
-                ),
-                const SizedBox(height: 8),
-                if (cap != null && cap.id != -1) ...[
-                  TextField(
-                    controller: cap.controller,
-                    onChanged: (_) => setState(() {}),
-                    decoration: const InputDecoration(
-                      hintText: 'Type your caption…',
-                      prefixIcon: Icon(Icons.edit_outlined),
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _StyleControls(
-                    caption: cap,
-                    onChanged: (updated) {
-                      setState(() {
-                        final idx = _captions.indexWhere(
-                          (e) => e.id == updated.id,
-                        );
-                        if (idx != -1) _captions[idx] = updated;
-                      });
-                    },
-                  ),
-                ] else ...[
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Tip: Tap on a caption to select it. Use the + button to add more.',
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 4),
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -417,7 +563,50 @@ class _HeaderBar extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   FilledButton.tonalIcon(
-                    onPressed: () {},
+                    onPressed: () {
+                      showDialog(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Guide'),
+                          content: const SingleChildScrollView(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '• Pinch to zoom and drag to pan the canvas.',
+                                ),
+                                SizedBox(height: 6),
+                                Text(
+                                  '• Tap a caption to select it. Drag to move it.',
+                                ),
+                                SizedBox(height: 6),
+                                Text(
+                                  '• Double‑tap a caption to edit its text.',
+                                ),
+                                SizedBox(height: 6),
+                                Text(
+                                  '• Use the bottom panel to change size, color, outline, alignment and shadow.',
+                                ),
+                                SizedBox(height: 6),
+                                Text(
+                                  '• Tap Done in the editor or press the Done key to hide the keyboard and view the image.',
+                                ),
+                                SizedBox(height: 6),
+                                Text(
+                                  '• Use the download icon to export as PNG.',
+                                ),
+                              ],
+                            ),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(),
+                              child: const Text('Close'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                     icon: const Icon(Icons.help_outline),
                     label: const Text('Guide'),
                   ),
@@ -561,12 +750,16 @@ class _CaptionBox extends StatefulWidget {
     required this.selected,
     required this.onTap,
     required this.onChanged,
+    required this.scale,
+    required this.onDoubleTap,
   });
 
   final _Caption caption;
   final bool selected;
   final VoidCallback onTap;
   final ValueChanged<_Caption> onChanged;
+  final double scale;
+  final VoidCallback onDoubleTap;
 
   @override
   State<_CaptionBox> createState() => _CaptionBoxState();
@@ -575,37 +768,70 @@ class _CaptionBox extends StatefulWidget {
 class _CaptionBoxState extends State<_CaptionBox> {
   late Offset _dragOrigin;
   late Offset _startPos;
+  late Offset _pos;
+
+  @override
+  void initState() {
+    super.initState();
+    _pos = widget.caption.position;
+  }
+
+  @override
+  void didUpdateWidget(covariant _CaptionBox oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // If the external position changed (e.g., alignment controls), sync local
+    if (oldWidget.caption.position != widget.caption.position &&
+        _pos != widget.caption.position) {
+      _pos = widget.caption.position;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final text = widget.caption.controller.text;
+    final textController = widget.caption.controller;
     return Positioned(
-      left: widget.caption.position.dx,
-      top: widget.caption.position.dy,
+      left: _pos.dx,
+      top: _pos.dy,
       child: GestureDetector(
         onTap: widget.onTap,
+        onDoubleTap: widget.onDoubleTap,
         onPanStart: (d) {
-          _dragOrigin = d.globalPosition;
-          _startPos = widget.caption.position;
+          _dragOrigin = d.localPosition;
+          _startPos = _pos;
         },
         onPanUpdate: (d) {
-          final delta = d.globalPosition - _dragOrigin;
+          // Adjust by current zoom scale for intuitive dragging when zoomed
+          final delta =
+              (d.localPosition - _dragOrigin) /
+              (widget.scale == 0 ? 1 : widget.scale);
           final next = _startPos + delta;
-          widget.onChanged(widget.caption.copyWith(position: next));
+          setState(() => _pos = next);
+        },
+        onPanEnd: (_) {
+          // Notify parent once to avoid rebuilding the whole tree on every frame
+          widget.onChanged(widget.caption.copyWith(position: _pos));
         },
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            _OutlinedText(
-              text: text.isEmpty ? ' ' : text,
-              fontSize: widget.caption.fontSize,
-              weight: widget.caption.weight,
-              color: widget.caption.color,
-              strokeColor: widget.caption.strokeColor,
-              strokeWidth: widget.caption.strokeWidth,
-              shadow: widget.caption.shadow,
-              align: widget.caption.align,
-              maxWidth: 260,
+            RepaintBoundary(
+              child: ValueListenableBuilder<TextEditingValue>(
+                valueListenable: textController,
+                builder: (context, value, _) {
+                  final text = value.text;
+                  return _OutlinedText(
+                    text: text.isEmpty ? ' ' : text,
+                    fontSize: widget.caption.fontSize,
+                    weight: widget.caption.weight,
+                    color: widget.caption.color,
+                    strokeColor: widget.caption.strokeColor,
+                    strokeWidth: widget.caption.strokeWidth,
+                    shadow: widget.caption.shadow,
+                    align: widget.caption.align,
+                    maxWidth: 260,
+                  );
+                },
+              ),
             ),
             if (widget.selected)
               Positioned(
@@ -758,28 +984,25 @@ class _StyleControls extends StatelessWidget {
               selected: caption.color,
               onPick: (c) => onChanged(caption.copyWith(color: c)),
             ),
-            const Spacer(),
-            const Text('Stroke'),
             const SizedBox(width: 8),
-            SizedBox(
-              width: 120,
-              child: Slider(
-                value: caption.strokeWidth,
-                min: 0,
-                max: 8,
-                onChanged: (v) => onChanged(caption.copyWith(strokeWidth: v)),
-              ),
-            ),
-            const Spacer(),
-            IconButton(
-              tooltip: 'Toggle shadow',
-              onPressed: () =>
-                  onChanged(caption.copyWith(shadow: !caption.shadow)),
-              icon: Icon(
-                caption.shadow ? Icons.wb_shade_outlined : Icons.wb_shade,
-              ),
-            ),
           ],
+        ),
+        const Text('Stroke'),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 120,
+          child: Slider(
+            value: caption.strokeWidth,
+            min: 0,
+            max: 8,
+            onChanged: (v) => onChanged(caption.copyWith(strokeWidth: v)),
+          ),
+        ),
+        const SizedBox(height: 8),
+        IconButton(
+          tooltip: 'Toggle shadow',
+          onPressed: () => onChanged(caption.copyWith(shadow: !caption.shadow)),
+          icon: Icon(caption.shadow ? Icons.wb_shade_outlined : Icons.wb_shade),
         ),
         const SizedBox(height: 8),
         // Alignment & stroke color
@@ -807,21 +1030,22 @@ class _StyleControls extends StatelessWidget {
                   onChanged(caption.copyWith(align: s.first)),
             ),
             const Spacer(),
-            const Text('Outline'),
-            const SizedBox(width: 8),
-            _ColorDotRow(
-              colors: const [
-                Colors.black,
-                Colors.white,
-                Colors.deepPurple,
-                Colors.blueGrey,
-                Colors.teal,
-                Colors.orange,
-              ],
-              selected: caption.strokeColor,
-              onPick: (c) => onChanged(caption.copyWith(strokeColor: c)),
-            ),
           ],
+        ),
+
+        const Text('Outline'),
+        const SizedBox(width: 8),
+        _ColorDotRow(
+          colors: const [
+            Colors.black,
+            Colors.white,
+            Colors.deepPurple,
+            Colors.blueGrey,
+            Colors.teal,
+            Colors.orange,
+          ],
+          selected: caption.strokeColor,
+          onPick: (c) => onChanged(caption.copyWith(strokeColor: c)),
         ),
       ],
     );

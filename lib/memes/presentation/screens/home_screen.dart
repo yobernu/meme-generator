@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:provider/provider.dart';
 import 'package:memes/memes/presentation/provider%5Bbloc%5D/meme_event.dart';
 import 'package:memes/memes/presentation/provider[bloc]/meme_bloc.dart';
 import 'package:memes/memes/presentation/provider%5Bbloc%5D/meme.state.dart';
@@ -12,11 +13,37 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
+  AnimationController? animController;
+  Animation<double>? animation;
   @override
   void initState() {
     super.initState();
+    animController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    );
+    final curvedAnimation = CurvedAnimation(
+      parent: animController!,
+      curve: Curves.easeInOut,
+      reverseCurve: Curves.easeInOut,
+    );
+    animation = Tween<double>(begin: 0.9, end: 1.1).animate(curvedAnimation)
+      ..addListener(() {
+        setState(() {});
+      })
+      ..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          animController!.reverse();
+        } else if (status == AnimationStatus.dismissed) {
+          animController!.forward();
+        }
+      });
+
+    animController!.forward();
     // Load memes when screen initializes
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<MemeBloc>().add(const GetMemesEvent());
     });
@@ -26,6 +53,43 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[200],
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          // Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
+        },
+        tooltip: 'Home',
+        elevation: 6,
+        child: const Icon(Icons.home, size: 32),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      bottomNavigationBar: BottomAppBar(
+        shape: const CircularNotchedRectangle(),
+        notchMargin: 8.0,
+        height: 64,
+        color: Colors.white,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              IconButton(
+                tooltip: 'Favorites',
+                icon: const Icon(Icons.favorite),
+                onPressed: () {
+                  Navigator.pushNamed(context, '/favorites');
+                },
+              ),
+              IconButton(
+                tooltip: 'meme',
+                icon: const Icon(Icons.add),
+                onPressed: () {
+                  Navigator.pushNamed(context, '/my-memes');
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
       body: RefreshIndicator(
         onRefresh: () async {
           // trigger reload
@@ -43,7 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
             physics: const AlwaysScrollableScrollPhysics(),
             children: [
               Padding(
-                padding: EdgeInsets.fromLTRB(16, 36, 16, 0),
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 0),
                 child: SizedBox(
                   // height: 210,
                   child: Column(
@@ -52,19 +116,30 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       Row(
                         children: [
-                          Text(
-                            "Memecita",
-                            style: TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              color: Color.fromARGB(255, 130, 61, 199),
-                            ),
-                            textAlign: TextAlign.start,
-                          ),
                           Spacer(),
-                          PopUp(),
+                          Transform.scale(
+                            scale: animation?.value ?? 1.0,
+                            child: Text(
+                              "Memecita",
+                              style: TextStyle(
+                                fontSize: 44,
+                                fontWeight: FontWeight.bold,
+                                color: Color.fromARGB(255, 130, 61, 199),
+                              ),
+                              textAlign: TextAlign.start,
+                            ),
+                          ),
+
+                          Spacer(),
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pushNamed(context, '/search');
+                            },
+                            child: Icon(Icons.search),
+                          ),
                         ],
                       ),
+                      SizedBox(height: 16),
                       Row(
                         children: [
                           Text(
@@ -124,6 +199,12 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    animController!.dispose();
+    super.dispose();
   }
 }
 

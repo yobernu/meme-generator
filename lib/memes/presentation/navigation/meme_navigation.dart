@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:memes/memes/domain/entities/meme.dart';
-import 'package:memes/memes/presentation/screens/add_meme.dart';
+import 'package:memes/memes/presentation/screens/create_meme.dart';
 import 'package:memes/memes/presentation/screens/favorites_screen.dart';
 import 'package:memes/memes/presentation/screens/home_screen.dart';
 import 'package:memes/memes/presentation/screens/meme_details.dart';
+import 'package:memes/memes/presentation/screens/search_screen.dart';
+import 'package:memes/memes/presentation/screens/my_memes.dart';
 
 class Navigation {
   static Route<dynamic> generateRoute(RouteSettings settings) {
@@ -21,7 +23,8 @@ class Navigation {
       case '/meme-details':
         return MaterialPageRoute(
           // If MemeDetails reads the meme via ModalRoute, you don't need to pass it here
-          builder: (_) => MemeDetails(favoriteIds: <String>{}), // mutable set for toggling
+          builder: (_) =>
+              MemeDetails(favoriteIds: <String>{}), // mutable set for toggling
           settings: settings, // IMPORTANT
         );
 
@@ -37,6 +40,18 @@ class Navigation {
             settings: settings,
           );
         }
+      case '/search':
+        return MaterialPageRoute(
+          // If MemeDetails reads the meme via ModalRoute, you don't need to pass it here
+          builder: (_) => SearchScreen(), // mutable set for toggling
+          settings: settings, // IMPORTANT
+        );
+      case '/my-memes':
+        return MaterialPageRoute(
+          // If MemeDetails reads the meme via ModalRoute, you don't need to pass it here
+          builder: (_) => MyMemesScreen(), // mutable set for toggling
+          settings: settings, // IMPORTANT
+        );
       default:
         return MaterialPageRoute(
           builder: (_) => const HomeScreen(),

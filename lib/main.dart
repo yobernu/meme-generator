@@ -39,10 +39,12 @@ class MyApp extends StatelessWidget {
 
 // plans
 /* 
-1. finish loading-memes , favorites section, and add memes[from local]
-2. work on downloading photos on local device ---- let em screenshot 😁
-
->>>>>>Future<<<<<<
+1. finish loading-memes , favorites section, and add memes[from local]   ---done
+2. work on downloading photos on local device ---- let em screenshot 😁 ---done
+3. add create meme functionality ---done
+4. add edit meme functionality ---done
+5. store newly created memes in one screen
+          >>>>>>Future<<<<<<
   - share functionality   
   - local cache           ---- done
   - work on other API endpoints
